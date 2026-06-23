@@ -1,0 +1,43 @@
+# Unity
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+
+# Unity generated
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# Meta files solo para carpetas vacias
+# (los .meta de scripts SÍ deben subirse)
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# VS / Rider
+.vs/
+.idea/
+*.swp
+
+# Python (backend)
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
