@@ -1,0 +1,30 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6c4638ec0429bf44685dc61d1e9e6f93, type: 3}
+  m_Name: Site_RedSocialFalsa
+  m_EditorClassIdentifier: 
+  SiteId: site_red_social_falsa
+  DisplayName: Facebook
+  DisplayURL: https://faceb00k-login.com/verify
+  HasHTTPS: 1
+  LogoText: facebook
+  IsPhishing: 1
+  ActiveIndicators: 9
+  FormFieldLabels:
+  - Email
+  - "Contrase\xF1a"
+  - "N\xFAmero de tel\xE9fono"
+  - "C\xF3digo SMS"
+  EducationalExplanation: "Este sitio ten\xEDa se\xF1ales de alerta aunque usaba
+    HTTPS:\n\u2022 El dominio era 'faceb00k-login.com' (con ceros en lugar de 'o').\n\u2022
+    HTTPS solo garantiza que la conexi\xF3n est\xE1 cifrada, no que el sitio sea
+    leg\xEDtimo.\n\u2022 Facebook nunca pide tu c\xF3digo SMS en el login normal."

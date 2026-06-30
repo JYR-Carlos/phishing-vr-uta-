@@ -1,0 +1,31 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6c4638ec0429bf44685dc61d1e9e6f93, type: 3}
+  m_Name: Site_BancoEstadoFalso
+  m_EditorClassIdentifier: 
+  SiteId: site_banco_falso
+  DisplayName: BancoEstado
+  DisplayURL: http://bancestado-cl.tk/login
+  HasHTTPS: 0
+  LogoText: BancEstado
+  IsPhishing: 1
+  ActiveIndicators: -1
+  FormFieldLabels:
+  - RUT
+  - Clave
+  - Clave Tarjeta
+  - PIN
+  - Fecha Nacimiento
+  EducationalExplanation: "Este sitio ten\xEDa varias se\xF1ales de alerta:\n\u2022
+    La URL usaba HTTP (sin candado), no HTTPS.\n\u2022 El dominio 'bancestado-cl.tk'
+    no es el oficial 'bancoestado.cl'.\n\u2022 El logotipo ten\xEDa un error tipogr\xE1fico
+    ('BancEstado').\n\u2022 Se ped\xEDan datos excesivos como PIN y fecha de nacimiento."
