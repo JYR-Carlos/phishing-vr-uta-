@@ -124,6 +124,15 @@ namespace PhishVR.Telemetry
             _summaryWriter.Flush();
         }
 
+        /// <summary>
+        /// Avanza el puntero interno para ignorar frames del warm-up en el raw CSV.
+        /// Llamar justo antes del período de medición.
+        /// </summary>
+        public void SkipToCurrentFrame()
+        {
+            _lastFlushedFrame = _sampler.TotalFrames;
+        }
+
         public void CloseSession()
         {
             FlushPending();

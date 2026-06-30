@@ -8,7 +8,8 @@ namespace PhishVR.Telemetry
 {
     /// <summary>
     /// Orquesta el experimento A/B: ejecuta cada RenderCondition durante una duración fija,
-    /// descarta el período de warm-up y guarda estadísticas al finalizar cada condición.
+    /// descarta el período de warm-up, y acumula estadísticas en línea (Welford + reservoir)
+    /// para que la duración de medición no esté limitada por el tamaño del ring buffer.
     /// </summary>
     [RequireComponent(typeof(PerfSampler))]
     [RequireComponent(typeof(RenderConditionController))]
@@ -30,10 +31,10 @@ namespace PhishVR.Telemetry
         [Tooltip("InputAction para avanzar manualmente (ej: Primary Button / Button South)")]
         public InputActionReference advanceAction;
 
-        public bool  IsRunning        { get; private set; }
-        public int   CurrentIndex     { get; private set; }
-        public float CurrentProgress  { get; private set; }  // 0-1 dentro de la condición activa
-        public bool  InWarmup         { get; private set; }
+        public bool  IsRunning       { get; private set; }
+        public int   CurrentIndex    { get; private set; }
+        public float CurrentProgress { get; private set; }
+        public bool  InWarmup        { get; private set; }
 
         public event Action<ConditionSummary> OnConditionComplete;
         public event Action<List<ConditionSummary>> OnExperimentComplete;
@@ -57,16 +58,39 @@ namespace PhishVR.Telemetry
             public int    SampleCount;
         }
 
-        // ── Private ────────────────────────────────────────────────────────
-        private PerfSampler              _sampler;
-        private RenderConditionController _controller;
-        private CsvLogger                _logger;
-        private bool                     _advanceRequested;
+        // ── Acumuladores en línea (Welford) — sin GC, sin límite de duración ──
+        private struct WelfordAcc
+        {
+            public int    n;
+            public double mean;
+            public double M2;   // varianza acumulada (algoritmo de Welford)
 
-        // Buffers pre-allocated para cálculo de estadísticas (sin GC en steady state)
-        private float[] _statBufCpu = new float[PerfSampler.RingBufferSize];
-        private float[] _statBufGpu = new float[PerfSampler.RingBufferSize];
-        private float[] _statBufFps = new float[PerfSampler.RingBufferSize];
+            public void Add(float x)
+            {
+                n++;
+                double delta  = x - mean;
+                mean += delta / n;
+                double delta2 = x - mean;
+                M2   += delta * delta2;
+            }
+
+            public float Mean   => (float)mean;
+            public float StdDev => n > 1 ? (float)Math.Sqrt(M2 / n) : 0f;
+        }
+
+        // Reservoir sampling para percentiles (tamaño fijo, no GC durante steady-state)
+        private const int ReservoirSize = 2000;
+        private float[] _resCpu  = new float[ReservoirSize];
+        private float[] _resGpu  = new float[ReservoirSize];
+        private float[] _resSorted = new float[ReservoirSize];
+        private int     _resCount;
+        private uint    _rngState = 12345;  // LCG seed
+
+        private PerfSampler               _sampler;
+        private RenderConditionController _controller;
+        private CsvLogger                 _logger;
+        private bool                      _advanceRequested;
+        private int                       _lastFrameIndex;
 
         void Awake()
         {
@@ -105,8 +129,8 @@ namespace PhishVR.Telemetry
 
         private IEnumerator RunExperiment()
         {
-            IsRunning     = true;
-            CurrentIndex  = 0;
+            IsRunning    = true;
+            CurrentIndex = 0;
             var summaries = new List<ConditionSummary>(conditions.Length);
 
             _logger.OpenSession();
@@ -115,10 +139,10 @@ namespace PhishVR.Telemetry
             {
                 if (condition == null) { CurrentIndex++; continue; }
 
-                Debug.Log($"[ExperimentRunner] Iniciando condición {CurrentIndex + 1}/{conditions.Length}: {condition.displayName}");
+                Debug.Log($"[ExperimentRunner] Condición {CurrentIndex + 1}/{conditions.Length}: {condition.displayName}");
                 _controller.Apply(condition);
 
-                // Warm-up: captura datos pero no los usa
+                // ── Warm-up ───────────────────────────────────────────────
                 InWarmup = true;
                 float elapsed = 0f;
                 while (elapsed < warmupDurationSec)
@@ -129,10 +153,16 @@ namespace PhishVR.Telemetry
                     yield return null;
                 }
 
-                // Measurement: snapshot del ring buffer al inicio, luego al final
+                // Descartar frames del warmup del raw CSV y de los acumuladores
+                _logger.SkipToCurrentFrame();
+                ResetAccumulators();
+                // TotalFrames-1 para que el primer frame de medición (FrameIndex == TotalFrames)
+                // pase el guard ">" en AccumulateCurrentFrame
+                _lastFrameIndex = _sampler.TotalFrames - 1;
+
+                // ── Medición ──────────────────────────────────────────────
                 InWarmup = false;
-                int frameStart = _sampler.TotalFrames;
-                elapsed = 0f;
+                elapsed  = 0f;
 
                 while (elapsed < measureDurationSec)
                 {
@@ -140,21 +170,23 @@ namespace PhishVR.Telemetry
                     elapsed += Time.unscaledDeltaTime;
                     CurrentProgress = elapsed / measureDurationSec;
 
-                    // Volcar frames al CSV en tiempo real
+                    // Acumular estadísticas del frame actual (GC-free)
+                    AccumulateCurrentFrame();
+
+                    // Volcar frame al CSV (periódicamente dentro de CsvLogger)
                     _logger.FlushPending();
                     yield return null;
                 }
 
-                // Calcular estadísticas sobre el período medido
-                int frameEnd  = _sampler.TotalFrames;
-                var summary   = ComputeSummary(condition, frameStart, frameEnd);
+                var summary = BuildSummary(condition);
                 summaries.Add(summary);
                 _logger.WriteSummaryRow(summary);
                 OnConditionComplete?.Invoke(summary);
 
-                Debug.Log($"[ExperimentRunner] Condición {condition.displayName} completada: " +
+                Debug.Log($"[ExperimentRunner] {condition.displayName}: " +
                           $"fps={summary.MeanFps:F1} cpu={summary.MeanCpuMs:F2}ms gpu={summary.MeanGpuMs:F2}ms " +
-                          $"dropped={summary.DroppedFramesPct:F1}% hand_lat={summary.MeanHandLatencyMs:F1}ms");
+                          $"p95cpu={summary.P95CpuMs:F2}ms dropped={summary.DroppedFramesPct:F1}% " +
+                          $"hand={summary.MeanHandLatencyMs:F1}ms n={summary.SampleCount}");
 
                 CurrentIndex++;
             }
@@ -163,96 +195,100 @@ namespace PhishVR.Telemetry
             _controller.RestoreDefaults();
             IsRunning = false;
             OnExperimentComplete?.Invoke(summaries);
-            Debug.Log("[ExperimentRunner] Experimento completado. Extrae los CSV con: adb pull <ruta>");
         }
 
-        private ConditionSummary ComputeSummary(RenderCondition condition, int frameStart, int frameEnd)
+        // ── Acumuladores Welford (campos directos para evitar boxing) ──────
+        private WelfordAcc _accCpu, _accGpu, _accFps, _accHand;
+        private int        _droppedTotal;
+
+        private void ResetAccumulators()
         {
-            int count = 0;
-            double sumFps = 0, sumCpu = 0, sumGpu = 0, sumHand = 0;
-            int totalDropped = 0;
+            _accCpu   = default;
+            _accGpu   = default;
+            _accFps   = default;
+            _accHand  = default;
+            _droppedTotal = 0;
+            _resCount = 0;
+            _rngState = 12345;
+        }
 
-            // Recorre el ring buffer en el rango medido
-            int totalFrames = _sampler.TotalFrames;
-            int ringSize    = PerfSampler.RingBufferSize;
+        private void AccumulateCurrentFrame()
+        {
+            // Leer el último frame escrito al ring buffer (evita copiar struct)
+            int lastIdx = (_sampler.WriteHead - 1 + PerfSampler.RingBufferSize) % PerfSampler.RingBufferSize;
+            ref var s = ref _sampler.Buffer[lastIdx];
 
-            for (int fi = frameStart; fi < frameEnd; fi++)
+            // Solo acumular si es un frame nuevo
+            if (s.FrameIndex <= _lastFrameIndex) return;
+            _lastFrameIndex = s.FrameIndex;
+
+            _accCpu.Add(s.CpuFrameMs);
+            _accGpu.Add(s.GpuFrameMs);
+            _accFps.Add(s.Fps);
+            _accHand.Add(s.HandLatencyMs);
+            _droppedTotal += s.DroppedFramesDelta;
+
+            // Reservoir sampling (Vitter's Algorithm R) para percentiles — GC-free
+            int n = _accCpu.n;
+            if (n <= ReservoirSize)
             {
-                int idx = fi % ringSize;
-                // Guardia: si el buffer dio vuelta y sobreescribió, saltamos
-                if (totalFrames - fi > ringSize) continue;
-
-                ref var s = ref _sampler.Buffer[idx];
-                if (count < _statBufCpu.Length)
-                {
-                    _statBufCpu[count] = s.CpuFrameMs;
-                    _statBufGpu[count] = s.GpuFrameMs;
-                    _statBufFps[count] = s.Fps;
-                }
-                sumFps  += s.Fps;
-                sumCpu  += s.CpuFrameMs;
-                sumGpu  += s.GpuFrameMs;
-                sumHand += s.HandLatencyMs;
-                totalDropped += s.DroppedFramesDelta;
-                count++;
+                _resCpu[n - 1] = s.CpuFrameMs;
+                _resGpu[n - 1] = s.GpuFrameMs;
+                _resCount = n;
             }
+            else
+            {
+                uint r = NextRng() % (uint)n;
+                if (r < ReservoirSize)
+                {
+                    _resCpu[(int)r] = s.CpuFrameMs;
+                    _resGpu[(int)r] = s.GpuFrameMs;
+                }
+            }
+        }
 
-            if (count == 0) return new ConditionSummary { ConditionId = condition.conditionId };
+        private ConditionSummary BuildSummary(RenderCondition condition)
+        {
+            int n = _accCpu.n;
+            if (n == 0) return new ConditionSummary { ConditionId = condition.conditionId };
 
-            float meanFps  = (float)(sumFps  / count);
-            float meanCpu  = (float)(sumCpu  / count);
-            float meanGpu  = (float)(sumGpu  / count);
-            float meanHand = (float)(sumHand / count);
-
-            int statCount = Math.Min(count, _statBufCpu.Length);
-            Array.Sort(_statBufCpu, 0, statCount);
-            Array.Sort(_statBufGpu, 0, statCount);
-
-            float p95Cpu = Percentile(_statBufCpu, statCount, 0.95f);
-            float p99Cpu = Percentile(_statBufCpu, statCount, 0.99f);
-            float p95Gpu = Percentile(_statBufGpu, statCount, 0.95f);
-            float p99Gpu = Percentile(_statBufGpu, statCount, 0.99f);
-            float stdCpu = StdDev(_statBufCpu, statCount, meanCpu);
-            float stdGpu = StdDev(_statBufGpu, statCount, meanGpu);
-
-            float droppedPct = count > 0 ? (totalDropped / (float)count) * 100f : 0f;
+            float p95Cpu, p99Cpu, p95Gpu, p99Gpu;
+            ComputePercentiles(_resCpu, _resCount, out p95Cpu, out p99Cpu);
+            ComputePercentiles(_resGpu, _resCount, out p95Gpu, out p99Gpu);
 
             return new ConditionSummary
             {
-                ConditionId      = condition.conditionId,
-                DisplayName      = condition.displayName,
-                MeanFps          = meanFps,
-                MeanCpuMs        = meanCpu,
-                MeanGpuMs        = meanGpu,
-                P95CpuMs         = p95Cpu,
-                P99CpuMs         = p99Cpu,
-                StdDevCpuMs      = stdCpu,
-                P95GpuMs         = p95Gpu,
-                P99GpuMs         = p99Gpu,
-                StdDevGpuMs      = stdGpu,
-                DroppedFramesPct = droppedPct,
-                MeanHandLatencyMs = meanHand,
-                SampleCount      = count
+                ConditionId       = condition.conditionId,
+                DisplayName       = condition.displayName,
+                MeanFps           = _accFps.Mean,
+                MeanCpuMs         = _accCpu.Mean,
+                MeanGpuMs         = _accGpu.Mean,
+                P95CpuMs          = p95Cpu,
+                P99CpuMs          = p99Cpu,
+                StdDevCpuMs       = _accCpu.StdDev,
+                P95GpuMs          = p95Gpu,
+                P99GpuMs          = p99Gpu,
+                StdDevGpuMs       = _accGpu.StdDev,
+                DroppedFramesPct  = n > 0 ? (_droppedTotal / (float)n) * 100f : 0f,
+                MeanHandLatencyMs = _accHand.Mean,
+                SampleCount       = n
             };
         }
 
-        private static float Percentile(float[] sorted, int count, float p)
+        private void ComputePercentiles(float[] reservoir, int count, out float p95, out float p99)
         {
-            if (count == 0) return 0f;
-            int idx = Mathf.Clamp((int)(p * count), 0, count - 1);
-            return sorted[idx];
+            if (count == 0) { p95 = 0f; p99 = 0f; return; }
+            Array.Copy(reservoir, _resSorted, count);
+            Array.Sort(_resSorted, 0, count);
+            p95 = _resSorted[Mathf.Clamp((int)(0.95f * count), 0, count - 1)];
+            p99 = _resSorted[Mathf.Clamp((int)(0.99f * count), 0, count - 1)];
         }
 
-        private static float StdDev(float[] arr, int count, float mean)
+        // LCG sin alloc para reservoir sampling
+        private uint NextRng()
         {
-            if (count == 0) return 0f;
-            double variance = 0;
-            for (int i = 0; i < count; i++)
-            {
-                double d = arr[i] - mean;
-                variance += d * d;
-            }
-            return (float)Math.Sqrt(variance / count);
+            _rngState = _rngState * 1664525u + 1013904223u;
+            return _rngState;
         }
     }
 }

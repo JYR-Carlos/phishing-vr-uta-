@@ -1,11 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.XR;
-
-#if URP_AVAILABLE
-using UnityEngine.Rendering.Universal;
-using UnityEngine.Rendering;
-#endif
+using ProviderXRStats = UnityEngine.XR.Provider.XRStats;
 
 namespace PhishVR.Telemetry
 {
@@ -16,7 +12,8 @@ namespace PhishVR.Telemetry
     /// </summary>
     public sealed class PerfSampler : MonoBehaviour
     {
-        public const int RingBufferSize = 512;
+        // 1024 frames ≥ 120fps × 8s — cubre warmup de 5s a 120Hz sin sobreescribir
+        public const int RingBufferSize = 1024;
 
         // Pre-allocated ring buffer (structs, no GC)
         public struct FrameSample
@@ -97,12 +94,18 @@ namespace PhishVR.Telemetry
                 gpuMs = (float)_timings[0].gpuFrameTime;
 
             // ── Dropped frames (cumulative → delta) ─────────────────────────
+            // API verificada: ProviderXRStats.TryGetStat con key "droppedFrameCount"
+            // (MetaPerformanceMetricsTest.cs · com.unity.xr.openxr 1.16.1)
             int droppedDelta = 0;
-            if (_display != null && _display.TryGetDroppedFrameCount(out int droppedTotal))
+            if (_display != null)
             {
-                droppedDelta = droppedTotal - _lastDroppedFrames;
-                if (droppedDelta < 0) droppedDelta = 0; // counter reset guard
-                _lastDroppedFrames = droppedTotal;
+                if (ProviderXRStats.TryGetStat(_display, "droppedFrameCount", out float droppedF))
+                {
+                    int droppedTotal = (int)droppedF;
+                    droppedDelta = droppedTotal - _lastDroppedFrames;
+                    if (droppedDelta < 0) droppedDelta = 0;
+                    _lastDroppedFrames = droppedTotal;
+                }
             }
 
             float fps = 1f / Time.unscaledDeltaTime;
