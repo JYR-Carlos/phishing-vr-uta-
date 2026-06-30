@@ -83,11 +83,13 @@ namespace PhishingVR.E2
         private void HandleMovement()
         {
             Transform t = _cam.transform;
+            // Mover el XR Origin (raíz del rig) para que cámara + controles se muevan juntos.
+            Transform rig = t.root != t ? t.root : t;
             Vector3 move = t.right * Input.GetAxis("Horizontal") + t.forward * Input.GetAxis("Vertical");
             if (Input.GetKey(KeyCode.E)) move += Vector3.up;
             if (Input.GetKey(KeyCode.Q)) move -= Vector3.up;
             float speed = moveSpeed * (Input.GetKey(KeyCode.LeftShift) ? 3f : 1f);
-            t.position += move * speed * Time.deltaTime;
+            rig.position += move * speed * Time.deltaTime;
         }
 
         // Rayo desde el centro de la cámara; pulsa el Button más cercano cuyo

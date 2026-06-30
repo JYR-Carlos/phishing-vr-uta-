@@ -1,0 +1,24 @@
+{
+    "name": "PhishVR.Telemetry",
+    "rootNamespace": "PhishVR.Telemetry",
+    "references": [
+        "GUID:75469ad4d38634e559750d17036d5f7c",
+        "GUID:4af21795022437d4bb139a86514b9ff9",
+        "GUID:4847341ff46394e83bb78fbd0652937e"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.render-pipelines.universal",
+            "expression": "",
+            "define": "URP_AVAILABLE"
+        }
+    ],
+    "noEngineReferences": false
+}
